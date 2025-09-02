@@ -1,0 +1,64 @@
+name: Clean Notebooks (auto-commit for collaborators)
+
+on:
+  push:
+    branches: [ "**" ]
+    paths: [ "**/*.ipynb" ]
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths: [ "**/*.ipynb" ]
+
+permissions:
+  contents: write  # allow the bot to push the cleaned file
+
+jobs:
+  clean:
+    # run only for same-repo branches (push) and same-repo PRs from collaborators
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository || github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Remove only metadata.widgets (surgical fix)
+        run: |
+          set -euo pipefail
+          mapfile -t NBS < <(git ls-files '*.ipynb' || true)
+          [ "${#NBS[@]}" -eq 0 ] && { echo "No notebooks found."; exit 0; }
+
+          python3 <<'PY'
+import json, pathlib, sys
+
+changed = False
+for nb in sys.argv[1:]:
+    p = pathlib.Path(nb)
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        continue
+    meta = data.get("metadata", {})
+    if "widgets" in meta:
+        meta.pop("widgets", None)
+        data["metadata"] = meta
+        p.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+        changed = True
+
+print("CHANGED" if changed else "NOCHANGE")
+PY
+          "${NBS[@]}"
+
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes after cleaning."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore: remove metadata.widgets from notebooks [skip ci]"
+          git push
